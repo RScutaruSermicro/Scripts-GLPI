@@ -190,6 +190,7 @@ $totalFilas = 0;
 $totalOk = 0;
 $totalError = 0;
 $totalOmitidas = 0;
+$totalYaEstaban = 0;
 
 try {
     $cabeceras = leerCabecerasCsv($rutaCsv, $delimitador);
@@ -249,8 +250,6 @@ try {
         $resultado['tabla'] = $tabla;
 
         try {
-            $pdo->beginTransaction();
-
             $sqlCheck = "SELECT id, states_id FROM {$tabla} WHERE id = :id LIMIT 1";
             $stmtCheck = $pdo->prepare($sqlCheck);
             $stmtCheck->execute([':id' => $itemsId]);
@@ -269,6 +268,15 @@ try {
 
             $resultado['estado_anterior'] = $oldValue;
             $resultado['estado_nuevo'] = $newValue;
+
+            if ($oldStateId === $NUEVO_ESTADO_ID) {
+                $resultado['resultado'] = 'YA ESTABA DESAFECTADO';
+                $resultados[] = $resultado;
+                $totalYaEstaban++;
+                continue;
+            }
+
+            $pdo->beginTransaction();
 
             $stmtUpdate = $pdo->prepare("UPDATE {$tabla} SET states_id = :states_id WHERE id = :id");
             $stmtUpdate->execute([
@@ -396,6 +404,11 @@ try {
             font-weight: bold;
         }
 
+        .ya-estaba {
+            color: #005cc5;
+            font-weight: bold;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -412,12 +425,6 @@ try {
         th {
             background: #f0f0f0;
         }
-
-        code {
-            background: #f3f3f3;
-            padding: 2px 6px;
-            border-radius: 4px;
-        }
     </style>
 </head>
 <body>
@@ -429,6 +436,7 @@ try {
         <div class="resumen">
             <div class="tarjeta"><strong>Total filas:</strong><br><?= (int)$totalFilas ?></div>
             <div class="tarjeta"><span class="ok">Correctas:</span><br><?= (int)$totalOk ?></div>
+            <div class="tarjeta"><span class="ya-estaba">Ya estaban desafectadas:</span><br><?= (int)$totalYaEstaban ?></div>
             <div class="tarjeta"><span class="error">Errores:</span><br><?= (int)$totalError ?></div>
             <div class="tarjeta"><span class="omitida">Omitidas:</span><br><?= (int)$totalOmitidas ?></div>
         </div>
@@ -465,6 +473,8 @@ try {
                                 <span class="ok"><?= h($r['resultado']) ?></span>
                             <?php elseif ($r['resultado'] === 'ERROR'): ?>
                                 <span class="error"><?= h($r['resultado']) ?></span>
+                            <?php elseif ($r['resultado'] === 'YA ESTABA DESAFECTADO'): ?>
+                                <span class="ya-estaba"><?= h($r['resultado']) ?></span>
                             <?php else: ?>
                                 <span class="omitida"><?= h($r['resultado']) ?></span>
                             <?php endif; ?>
