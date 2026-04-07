@@ -1,14 +1,22 @@
 <?php
 
+declare(strict_types=1);
+
+/**
+ * CONFIGURACION BD
+ */
+$DB_HOST = 'localhost';
+$DB_NAME = 'glpi_externos_pre';
+$DB_USER = 'root';
+$DB_PASS = ''; // pon aqui tu password si tienes
+$NUEVO_ESTADO_ID = 3;
+
 function normalizarCabecera(string $valor): string
 {
     $valor = preg_replace('/^\xEF\xBB\xBF/', '', $valor);
     return strtolower(trim($valor));
 }
 
-/**
- * Obtiene el nombre de la tabla correspondiente a un tipo de elemento.
- */
 function obtenerTablaItem(string $itemType): ?string
 {
     $mapa = [
@@ -26,28 +34,12 @@ function obtenerTablaItem(string $itemType): ?string
         'PluginGenericobjectArmarioscarga' => 'glpi_plugin_genericobject_armarioscargas',
     ];
 
-    if (isset($mapa[$itemType])) {
-        return $mapa[$itemType];
-    }
-
-    if (!preg_match('/^[A-Za-z]+$/', $itemType)) {
-        return null;
-    }
-
-    return 'glpi_' . strtolower($itemType) . 's';
+    return $mapa[$itemType] ?? null;
 }
 
-/**
- * Devuelve SQL para construir el user_name del log.
- * Ejemplo: "Apellidos Nombre (100689)"
- */
-function generarSqlUsuario(int $idUsuario): string
+function obtenerNombreUsuario(PDO $pdo, int $idUsuario): ?string
 {
-    if ($idUsuario <= 0) {
-        return 'NULL';
-    }
-
-    return "(
+    $sql = "
         SELECT CONCAT(
             CASE
                 WHEN TRIM(COALESCE(realname, '')) = '' AND TRIM(COALESCE(firstname, '')) = ''
@@ -55,95 +47,96 @@ function generarSqlUsuario(int $idUsuario): string
                 ELSE TRIM(CONCAT(COALESCE(realname, ''), ' ', COALESCE(firstname, '')))
             END,
             ' ({$idUsuario})'
-        )
-        FROM `glpi_users`
-        WHERE id = {$idUsuario}
-    )";
+        ) AS nombre
+        FROM glpi_users
+        WHERE id = :id
+        LIMIT 1
+    ";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([':id' => $idUsuario]);
+    $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    return $resultado['nombre'] ?? null;
 }
 
-/**
- * Genera el SQL para sacar el estado anterior en formato:
- * "NombreEstado (id)"
- */
-function generarSqlEstadoAnterior(string $tabla, int $itemsId): string
+function obtenerEstadoActual(PDO $pdo, string $tabla, int $itemsId): array
 {
-    return "(
-        SELECT CONCAT(COALESCE(gs.name, ''), ' (', COALESCE(gd.states_id, 0), ')')
-        FROM `{$tabla}` gd
-        LEFT JOIN `glpi_states` gs ON gs.id = gd.states_id
-        WHERE gd.id = {$itemsId}
-    )";
+    $sql = "
+        SELECT t.states_id, s.name AS estado_nombre
+        FROM {$tabla} t
+        LEFT JOIN glpi_states s ON s.id = t.states_id
+        WHERE t.id = :id
+        LIMIT 1
+    ";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([':id' => $itemsId]);
+    $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$resultado) {
+        return [
+            'states_id' => null,
+            'estado_nombre' => null
+        ];
+    }
+
+    return $resultado;
 }
 
-/**
- * Devuelve el texto del nuevo estado para el log.
- */
-function generarNuevoEstadoSql(int $nuevoEstadoId): string
+function obtenerNombreEstado(PDO $pdo, int $estadoId): ?string
 {
-    return "(
-        SELECT CONCAT(COALESCE(name, ''), ' ({$nuevoEstadoId})')
-        FROM `glpi_states`
-        WHERE id = {$nuevoEstadoId}
-    )";
+    $stmt = $pdo->prepare("SELECT name FROM glpi_states WHERE id = :id LIMIT 1");
+    $stmt->execute([':id' => $estadoId]);
+    $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    return $resultado['name'] ?? null;
 }
 
-function generarSqlUpdateEstado(string $tabla, int $itemsId, int $nuevoEstadoId): string
+function detectarDelimitador(string $rutaCsv): string
 {
-    return "UPDATE `{$tabla}` SET `states_id` = {$nuevoEstadoId} WHERE `id` = {$itemsId};";
+    $handle = fopen($rutaCsv, 'r');
+    if ($handle === false) {
+        return ';';
+    }
+
+    $primeraLinea = fgets($handle);
+    fclose($handle);
+
+    if ($primeraLinea === false) {
+        return ';';
+    }
+
+    $cantidadPuntoYComa = substr_count($primeraLinea, ';');
+    $cantidadComas = substr_count($primeraLinea, ',');
+    $cantidadTabs = substr_count($primeraLinea, "\t");
+
+    if ($cantidadTabs > $cantidadPuntoYComa && $cantidadTabs > $cantidadComas) {
+        return "\t";
+    }
+
+    if ($cantidadComas > $cantidadPuntoYComa) {
+        return ',';
+    }
+
+    return ';';
 }
 
-function generarSqlInsertLogCambioEstado(
-    string $itemType,
-    int $itemsId,
-    int $idUsuario,
-    string $tabla,
-    int $nuevoEstadoId
-): string {
-    $itemTypeSql = addslashes($itemType);
-    $usuarioSql = generarSqlUsuario($idUsuario);
-    $oldValueSql = generarSqlEstadoAnterior($tabla, $itemsId);
-    $newValueSql = generarNuevoEstadoSql($nuevoEstadoId);
-
-    return "INSERT INTO `glpi_logs`
-(`id`, `itemtype`, `items_id`, `itemtype_link`, `linked_action`, `user_name`, `date_mod`, `id_search_option`, `old_value`, `new_value`)
-VALUES
-(NULL, '{$itemTypeSql}', {$itemsId}, '', 0, {$usuarioSql}, NOW(), 31, {$oldValueSql}, {$newValueSql});";
-}
-
-function generarInsertsDesdeCsv(string $rutaCsv): void
+function procesarCsv(PDO $pdo, string $rutaCsv, int $nuevoEstadoId): void
 {
     if (!file_exists($rutaCsv)) {
         echo '<pre>No se encontro el fichero CSV: ' . htmlspecialchars($rutaCsv, ENT_QUOTES, 'UTF-8') . '</pre>';
         return;
     }
 
+    $delimitador = detectarDelimitador($rutaCsv);
     $handle = fopen($rutaCsv, 'r');
 
     if ($handle === false) {
-        echo '<pre>No se pudo abrir el fichero CSV.</pre>';
+        echo '<pre>No se pudo abrir el CSV.</pre>';
         return;
     }
 
-    $primeraLinea = fgets($handle);
-
-    if ($primeraLinea === false) {
-        fclose($handle);
-        echo '<pre>El fichero CSV esta vacio.</pre>';
-        return;
-    }
-
-    $delimitador = ';';
-    $cantidadPuntoYComa = substr_count($primeraLinea, ';');
-    $cantidadComas = substr_count($primeraLinea, ',');
-    $cantidadTabs = substr_count($primeraLinea, "\t");
-
-    if ($cantidadTabs > $cantidadPuntoYComa && $cantidadTabs > $cantidadComas) {
-        $delimitador = "\t";
-    } elseif ($cantidadComas > $cantidadPuntoYComa) {
-        $delimitador = ',';
-    }
-
-    rewind($handle);
     $cabeceras = fgetcsv($handle, 0, $delimitador);
 
     if ($cabeceras === false) {
@@ -157,50 +150,147 @@ function generarInsertsDesdeCsv(string $rutaCsv): void
 
     if (!isset($indices['id_dispositivo'], $indices['itemtype'], $indices['id_user'])) {
         fclose($handle);
-        echo '<pre>El CSV debe contener las cabeceras: id_dispositivo, itemtype e id_user.</pre>';
+        echo '<pre>El CSV debe contener: id_dispositivo;itemtype;id_user</pre>';
         return;
     }
 
-    $nuevoEstadoId = 3;
+    $nombreNuevoEstado = obtenerNombreEstado($pdo, $nuevoEstadoId);
+    $newValue = ($nombreNuevoEstado ?? 'Desconocido') . " ({$nuevoEstadoId})";
 
     echo '<pre>';
+    echo "Inicio del proceso...\n\n";
 
     while (($fila = fgetcsv($handle, 0, $delimitador)) !== false) {
-        $itemsId  = (int)($fila[$indices['id_dispositivo']] ?? 0);
+        $itemsId = (int)($fila[$indices['id_dispositivo']] ?? 0);
         $itemType = trim($fila[$indices['itemtype']] ?? '');
         $idUsuario = (int)($fila[$indices['id_user']] ?? 0);
 
         if ($itemsId <= 0 || $itemType === '' || $idUsuario <= 0) {
+            echo "Fila ignorada por datos incompletos.\n";
+            echo "----------------------------------------\n";
             continue;
         }
 
         $tabla = obtenerTablaItem($itemType);
 
         if ($tabla === null) {
-            echo "-- ItemType no reconocido: {$itemType}\n\n";
+            echo "ItemType no soportado: {$itemType}\n";
+            echo "----------------------------------------\n";
             continue;
         }
 
-        // UPDATE del dispositivo
-        echo generarSqlUpdateEstado($tabla, $itemsId, $nuevoEstadoId) . "\n";
+        try {
+            $pdo->beginTransaction();
 
-        // INSERT en glpi_logs
-        echo generarSqlInsertLogCambioEstado(
-            $itemType,
-            $itemsId,
-            $idUsuario,
-            $tabla,
-            $nuevoEstadoId
-        ) . "\n";
+            $estadoActual = obtenerEstadoActual($pdo, $tabla, $itemsId);
 
-        echo "\n-- ------------------------------------------\n\n";
+            if ($estadoActual['states_id'] === null) {
+                throw new Exception("No existe el registro con id {$itemsId} en {$tabla}");
+            }
+
+            $oldStateId = (int)$estadoActual['states_id'];
+            $oldStateName = $estadoActual['estado_nombre'] ?? 'Desconocido';
+            $oldValue = $oldStateName . " ({$oldStateId})";
+
+            if ($oldStateId === $nuevoEstadoId) {
+                $pdo->rollBack();
+                echo "ID {$itemsId} ({$itemType}): ya estaba en estado {$newValue}. Se omite.\n";
+                echo "----------------------------------------\n";
+                continue;
+            }
+
+            $sqlUpdate = "UPDATE {$tabla} SET states_id = :states_id WHERE id = :id";
+            $stmtUpdate = $pdo->prepare($sqlUpdate);
+            $stmtUpdate->execute([
+                ':states_id' => $nuevoEstadoId,
+                ':id' => $itemsId
+            ]);
+
+            if ($stmtUpdate->rowCount() === 0) {
+                throw new Exception("No se pudo actualizar el id {$itemsId} en {$tabla}");
+            }
+
+            $userName = obtenerNombreUsuario($pdo, $idUsuario);
+            if ($userName === null) {
+                $userName = "Usuario ({$idUsuario})";
+            }
+
+            $sqlLog = "
+                INSERT INTO glpi_logs
+                (
+                    itemtype,
+                    items_id,
+                    itemtype_link,
+                    linked_action,
+                    user_name,
+                    date_mod,
+                    id_search_option,
+                    old_value,
+                    new_value
+                )
+                VALUES
+                (
+                    :itemtype,
+                    :items_id,
+                    '',
+                    0,
+                    :user_name,
+                    NOW(),
+                    31,
+                    :old_value,
+                    :new_value
+                )
+            ";
+
+            $stmtLog = $pdo->prepare($sqlLog);
+            $stmtLog->execute([
+                ':itemtype' => $itemType,
+                ':items_id' => $itemsId,
+                ':user_name' => $userName,
+                ':old_value' => $oldValue,
+                ':new_value' => $newValue
+            ]);
+
+            $pdo->commit();
+
+            echo "OK - ID {$itemsId} ({$itemType}) actualizado en {$tabla}\n";
+            echo "     Estado anterior: {$oldValue}\n";
+            echo "     Estado nuevo:    {$newValue}\n";
+            echo "     Log insertado correctamente\n";
+            echo "----------------------------------------\n";
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            echo "ERROR - ID {$itemsId} ({$itemType}): " . $e->getMessage() . "\n";
+            echo "----------------------------------------\n";
+        }
     }
 
-    echo '</pre>';
-
     fclose($handle);
+    echo "\nProceso finalizado.\n";
+    echo '</pre>';
 }
 
-$file = ($_GET['file'] ?? '') . '.csv';
-$rutaCsv = __DIR__ . '/' . $file;
-generarInsertsDesdeCsv($rutaCsv);
+try {
+    $pdo = new PDO(
+        "mysql:host={$DB_HOST};dbname={$DB_NAME};charset=utf8mb4",
+        $DB_USER,
+        $DB_PASS,
+        [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]
+    );
+} catch (PDOException $e) {
+    die('<pre>Error de conexion a la base de datos: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>');
+}
+
+$file = $_GET['file'] ?? '';
+if ($file === '') {
+    die('<pre>Debes indicar el fichero en la URL. Ejemplo: ?file=PruebaDesafectacion</pre>');
+}
+
+$rutaCsv = __DIR__ . '/' . basename($file) . '.csv';
+procesarCsv($pdo, $rutaCsv, $NUEVO_ESTADO_ID);
