@@ -7,10 +7,7 @@ function normalizarCabecera(string $valor): string
 }
 
 /**
- * Obtiene el nombre de la tabla correspondiente a un tipo de elemento
- * 
- * @param string $itemType El tipo de elemento
- * @return string|null El nombre de la tabla o null si no se encuentra
+ * Obtiene el nombre de la tabla correspondiente a un tipo de elemento.
  */
 function obtenerTablaItem(string $itemType): ?string
 {
@@ -39,9 +36,10 @@ function obtenerTablaItem(string $itemType): ?string
 
     return 'glpi_' . strtolower($itemType) . 's';
 }
+
 /**
- * 
- * 
+ * Devuelve SQL para construir el user_name del log.
+ * Ejemplo: "Apellidos Nombre (100689)"
  */
 function generarSqlUsuario(int $idUsuario): string
 {
@@ -50,42 +48,66 @@ function generarSqlUsuario(int $idUsuario): string
     }
 
     return "(
-SELECT CONCAT(
-    CASE
-        WHEN TRIM(COALESCE(realname, '')) = '' AND TRIM(COALESCE(firstname, '')) = ''
-            THEN TRIM(COALESCE(name, ''))
-        ELSE TRIM(CONCAT(COALESCE(realname, ''), ' ', COALESCE(firstname, '')))
-    END,
-    ' ({$idUsuario})'
-)
-FROM `glpi_users`
-WHERE id = {$idUsuario}
-)";
+        SELECT CONCAT(
+            CASE
+                WHEN TRIM(COALESCE(realname, '')) = '' AND TRIM(COALESCE(firstname, '')) = ''
+                    THEN TRIM(COALESCE(name, ''))
+                ELSE TRIM(CONCAT(COALESCE(realname, ''), ' ', COALESCE(firstname, '')))
+            END,
+            ' ({$idUsuario})'
+        )
+        FROM `glpi_users`
+        WHERE id = {$idUsuario}
+    )";
 }
 
-
-function generarSqlTicket(int $ticketsId): string
+/**
+ * Genera el SQL para sacar el estado anterior en formato:
+ * "NombreEstado (id)"
+ */
+function generarSqlEstadoAnterior(string $tabla, int $itemsId): string
 {
     return "(
-SELECT CONCAT(COALESCE(name, ''), ' ({$ticketsId})')
-FROM `glpi_tickets`
-WHERE id = {$ticketsId}
-)";
+        SELECT CONCAT(COALESCE(gs.name, ''), ' (', COALESCE(gd.states_id, 0), ')')
+        FROM `{$tabla}` gd
+        LEFT JOIN `glpi_states` gs ON gs.id = gd.states_id
+        WHERE gd.id = {$itemsId}
+    )";
 }
 
-function generarSqlDispositivo(string $itemType, int $itemsId): string
+/**
+ * Devuelve el texto del nuevo estado para el log.
+ */
+function generarNuevoEstadoSql(int $nuevoEstadoId): string
 {
-    $tabla = obtenerTablaItem($itemType);
-
-    if ($tabla === null) {
-        return "'{$itemsId}'";
-    }
-
     return "(
-SELECT CONCAT(COALESCE(name, ''), ' ({$itemsId})')
-FROM `{$tabla}`
-WHERE id = {$itemsId}
-)";
+        SELECT CONCAT(COALESCE(name, ''), ' ({$nuevoEstadoId})')
+        FROM `glpi_states`
+        WHERE id = {$nuevoEstadoId}
+    )";
+}
+
+function generarSqlUpdateEstado(string $tabla, int $itemsId, int $nuevoEstadoId): string
+{
+    return "UPDATE `{$tabla}` SET `states_id` = {$nuevoEstadoId} WHERE `id` = {$itemsId};";
+}
+
+function generarSqlInsertLogCambioEstado(
+    string $itemType,
+    int $itemsId,
+    int $idUsuario,
+    string $tabla,
+    int $nuevoEstadoId
+): string {
+    $itemTypeSql = addslashes($itemType);
+    $usuarioSql = generarSqlUsuario($idUsuario);
+    $oldValueSql = generarSqlEstadoAnterior($tabla, $itemsId);
+    $newValueSql = generarNuevoEstadoSql($nuevoEstadoId);
+
+    return "INSERT INTO `glpi_logs`
+(`id`, `itemtype`, `items_id`, `itemtype_link`, `linked_action`, `user_name`, `date_mod`, `id_search_option`, `old_value`, `new_value`)
+VALUES
+(NULL, '{$itemTypeSql}', {$itemsId}, '', 0, {$usuarioSql}, NOW(), 31, {$oldValueSql}, {$newValueSql});";
 }
 
 function generarInsertsDesdeCsv(string $rutaCsv): void
@@ -133,49 +155,45 @@ function generarInsertsDesdeCsv(string $rutaCsv): void
     $cabecerasNormalizadas = array_map('normalizarCabecera', $cabeceras);
     $indices = array_flip($cabecerasNormalizadas);
 
-    if (!isset($indices['id_dispositivo'], $indices['ticket_id'], $indices['itemtype'], $indices['id_user'])) {
+    if (!isset($indices['id_dispositivo'], $indices['itemtype'], $indices['id_user'])) {
         fclose($handle);
-        echo '<pre>El CSV debe contener las cabeceras: id_dispositivo, ticket_id, itemtype y id_user.</pre>';
+        echo '<pre>El CSV debe contener las cabeceras: id_dispositivo, itemtype e id_user.</pre>';
         return;
     }
 
-    $tieneIdUser = isset($indices['id_user']);
+    $nuevoEstadoId = 3;
 
     echo '<pre>';
 
     while (($fila = fgetcsv($handle, 0, $delimitador)) !== false) {
-        if(empty($fila[$indices['id_user']])){
-            echo "NO TIENE USUARIO";
-            return;
-        }
-        $itemsId = (int) ($fila[$indices['id_dispositivo']] ?? 0);
-        $ticketsId = (int) ($fila[$indices['ticket_id']] ?? 0);
+        $itemsId  = (int)($fila[$indices['id_dispositivo']] ?? 0);
         $itemType = trim($fila[$indices['itemtype']] ?? '');
-        // $idUsuario = $tieneIdUser ? (int) ($fila[$indices['id_user']] ?? 0) : 0;
-        $idUsuario = $tieneIdUser ? (int) ($fila[$indices['id_user']] ?? 0) : 0;
+        $idUsuario = (int)($fila[$indices['id_user']] ?? 0);
 
-        if ($itemsId <= 0 || $ticketsId <= 0 || $itemType === '') {
+        if ($itemsId <= 0 || $itemType === '' || $idUsuario <= 0) {
             continue;
         }
 
-        $itemTypeSql = addslashes($itemType);
-        $usuarioSql = generarSqlUsuario($idUsuario);
-        $ticketSql = generarSqlTicket($ticketsId);
-        $dispositivoSql = generarSqlDispositivo($itemType, $itemsId);
+        $tabla = obtenerTablaItem($itemType);
 
-        // echo "INSERT INTO `glpi_items_tickets`(`id`, `itemtype`, `items_id`, `tickets_id`) ";
-        // echo "VALUES (NULL, '{$itemTypeSql}', {$itemsId}, {$ticketsId});\n";
+        if ($tabla === null) {
+            echo "-- ItemType no reconocido: {$itemType}\n\n";
+            continue;
+        }
 
         // UPDATE del dispositivo
-        //echo ""
+        echo generarSqlUpdateEstado($tabla, $itemsId, $nuevoEstadoId) . "\n";
 
-        echo "INSERT INTO `glpi_logs`(`id`, `itemtype`, `items_id`, `itemtype_link`, `linked_action`, `user_name`, `date_mod`, `id_search_option`, `old_value`,`new_value`) ";
-        echo "VALUES (NULL, '{$itemTypeSql}', {$itemsId}, 'Ticket', 15, {$usuarioSql}, NOW(), 0,'',{$ticketSql});\n";
+        // INSERT en glpi_logs
+        echo generarSqlInsertLogCambioEstado(
+            $itemType,
+            $itemsId,
+            $idUsuario,
+            $tabla,
+            $nuevoEstadoId
+        ) . "\n";
 
-        echo "<br>";
-        echo "-- --<br>";
-        echo "<br>";
-
+        echo "\n-- ------------------------------------------\n\n";
     }
 
     echo '</pre>';
@@ -183,8 +201,6 @@ function generarInsertsDesdeCsv(string $rutaCsv): void
     fclose($handle);
 }
 
-// $file = $_GET['file'] ?? 'data.csv';
-$file = $_GET['file'] . '.csv';
+$file = ($_GET['file'] ?? '') . '.csv';
 $rutaCsv = __DIR__ . '/' . $file;
 generarInsertsDesdeCsv($rutaCsv);
-
