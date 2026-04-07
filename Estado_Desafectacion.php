@@ -5,34 +5,65 @@ declare(strict_types=1);
 ini_set('display_errors', '1');
 error_reporting(E_ALL);
 
-/*
-|--------------------------------------------------------------------------
-| CONFIGURACION
-|--------------------------------------------------------------------------
-*/
-$DB_HOST = 'localhost';
-$DB_NAME = 'glpi_externos_pre';
-$DB_USER = 'root';
-$DB_PASS = '';
-$NUEVO_ESTADO_ID = 3;
-$ID_SEARCH_OPTION_ESTADO = 31;
+/**
+ * -------------------------------------------------------------------------
+ * CONFIGURACIÓN
+ * -------------------------------------------------------------------------
+ */
+$dbHost = 'localhost';
+$dbName = 'glpi_externos_pre';
+$dbUser = 'root';
+$dbPass = '';
 
-/*
-|--------------------------------------------------------------------------
-| FUNCIONES AUXILIARES
-|--------------------------------------------------------------------------
-*/
+/**
+ * ID del estado "Desafectado".
+ */
+$nuevoEstadoId = 3;
+
+/**
+ * id_search_option usado en glpi_logs para el campo "Estado".
+ */
+$idSearchOptionEstado = 31;
+
+/**
+ * -------------------------------------------------------------------------
+ * FUNCIONES AUXILIARES
+ * -------------------------------------------------------------------------
+ */
+
+/**
+ * Escapa texto para salida HTML.
+ *
+ * @param string $texto Texto a escapar.
+ *
+ * @return string
+ */
 function h(string $texto): string
 {
     return htmlspecialchars($texto, ENT_QUOTES, 'UTF-8');
 }
 
+/**
+ * Normaliza una cabecera del CSV.
+ *
+ * @param string $valor Cabecera original.
+ *
+ * @return string
+ */
 function normalizarCabecera(string $valor): string
 {
     $valor = preg_replace('/^\xEF\xBB\xBF/', '', $valor);
+
     return strtolower(trim($valor));
 }
 
+/**
+ * Devuelve la tabla GLPI asociada a un itemtype.
+ *
+ * @param string $itemType Tipo de elemento GLPI.
+ *
+ * @return string|null
+ */
 function obtenerTablaItem(string $itemType): ?string
 {
     $mapa = [
@@ -53,6 +84,13 @@ function obtenerTablaItem(string $itemType): ?string
     return $mapa[$itemType] ?? null;
 }
 
+/**
+ * Detecta automáticamente el delimitador del CSV.
+ *
+ * @param string $rutaCsv Ruta absoluta del fichero CSV.
+ *
+ * @return string
+ */
 function detectarDelimitador(string $rutaCsv): string
 {
     $handle = fopen($rutaCsv, 'r');
@@ -83,6 +121,14 @@ function detectarDelimitador(string $rutaCsv): string
     return ';';
 }
 
+/**
+ * Obtiene el nombre visible del usuario para guardarlo en glpi_logs.
+ *
+ * @param PDO $pdo Conexión PDO.
+ * @param int $idUsuario ID del usuario GLPI.
+ *
+ * @return string
+ */
 function obtenerNombreUsuario(PDO $pdo, int $idUsuario): string
 {
     $sql = "
@@ -101,11 +147,20 @@ function obtenerNombreUsuario(PDO $pdo, int $idUsuario): string
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute([':id' => $idUsuario]);
+
     $fila = $stmt->fetch(PDO::FETCH_ASSOC);
 
     return $fila['nombre'] ?? "Usuario ({$idUsuario})";
 }
 
+/**
+ * Obtiene el nombre de un estado GLPI a partir de su ID.
+ *
+ * @param PDO $pdo Conexión PDO.
+ * @param int $estadoId ID del estado.
+ *
+ * @return string
+ */
 function obtenerNombreEstado(PDO $pdo, int $estadoId): string
 {
     $stmt = $pdo->prepare("
@@ -115,11 +170,20 @@ function obtenerNombreEstado(PDO $pdo, int $estadoId): string
         LIMIT 1
     ");
     $stmt->execute([':id' => $estadoId]);
+
     $fila = $stmt->fetch(PDO::FETCH_ASSOC);
 
     return $fila['name'] ?? 'Desconocido';
 }
 
+/**
+ * Lee la primera línea del CSV y devuelve sus cabeceras.
+ *
+ * @param string $rutaCsv Ruta absoluta del CSV.
+ * @param string $delimitador Delimitador detectado.
+ *
+ * @return array
+ */
 function leerCabecerasCsv(string $rutaCsv, string $delimitador): array
 {
     $handle = fopen($rutaCsv, 'r');
@@ -138,16 +202,16 @@ function leerCabecerasCsv(string $rutaCsv, string $delimitador): array
     return $cabeceras;
 }
 
-/*
-|--------------------------------------------------------------------------
-| CONEXION BD
-|--------------------------------------------------------------------------
-*/
+/**
+ * -------------------------------------------------------------------------
+ * CONEXIÓN A BASE DE DATOS
+ * -------------------------------------------------------------------------
+ */
 try {
     $pdo = new PDO(
-        "mysql:host={$DB_HOST};dbname={$DB_NAME};charset=utf8mb4",
-        $DB_USER,
-        $DB_PASS,
+        "mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
         [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -161,11 +225,11 @@ try {
     );
 }
 
-/*
-|--------------------------------------------------------------------------
-| VALIDACION ENTRADA
-|--------------------------------------------------------------------------
-*/
+/**
+ * -------------------------------------------------------------------------
+ * VALIDACIÓN DE ENTRADA
+ * -------------------------------------------------------------------------
+ */
 $file = $_GET['file'] ?? '';
 
 if ($file === '') {
@@ -180,16 +244,15 @@ if (!file_exists($rutaCsv)) {
 
 $delimitador = detectarDelimitador($rutaCsv);
 
-/*
-|--------------------------------------------------------------------------
-| PROCESO
-|--------------------------------------------------------------------------
-*/
+/**
+ * -------------------------------------------------------------------------
+ * PROCESO PRINCIPAL
+ * -------------------------------------------------------------------------
+ */
 $resultados = [];
 $totalFilas = 0;
 $totalOk = 0;
 $totalError = 0;
-$totalOmitidas = 0;
 $totalYaEstaban = 0;
 
 try {
@@ -198,7 +261,9 @@ try {
     $indices = array_flip($cabecerasNormalizadas);
 
     if (!isset($indices['id_dispositivo'], $indices['itemtype'], $indices['id_user'])) {
-        throw new RuntimeException('El CSV debe contener las columnas: id_dispositivo;itemtype;id_user');
+        throw new RuntimeException(
+            'El CSV debe contener las columnas: id_dispositivo;itemtype;id_user'
+        );
     }
 
     $handle = fopen($rutaCsv, 'r');
@@ -207,34 +272,34 @@ try {
         throw new RuntimeException('No se pudo abrir el CSV para procesarlo.');
     }
 
-    fgetcsv($handle, 0, $delimitador); // Saltar cabecera
+    fgetcsv($handle, 0, $delimitador);
 
     while (($fila = fgetcsv($handle, 0, $delimitador)) !== false) {
-        if (count(array_filter($fila, fn($v) => trim((string)$v) !== '')) === 0) {
+        if (count(array_filter($fila, fn($valor) => trim((string) $valor) !== '')) === 0) {
             continue;
         }
 
         $totalFilas++;
 
-        $itemsId   = (int)($fila[$indices['id_dispositivo']] ?? 0);
-        $itemType  = trim((string)($fila[$indices['itemtype']] ?? ''));
-        $idUsuario = (int)($fila[$indices['id_user']] ?? 0);
+        $itemsId = (int) ($fila[$indices['id_dispositivo']] ?? 0);
+        $itemType = trim((string) ($fila[$indices['itemtype']] ?? ''));
+        $idUsuario = (int) ($fila[$indices['id_user']] ?? 0);
 
         $resultado = [
-            'fila'            => $totalFilas,
-            'items_id'        => $itemsId,
-            'itemtype'        => $itemType,
-            'tabla'           => '',
-            'usuario'         => $idUsuario,
+            'fila' => $totalFilas,
+            'items_id' => $itemsId,
+            'itemtype' => $itemType,
+            'tabla' => '',
+            'usuario' => $idUsuario,
             'estado_anterior' => '',
-            'estado_nuevo'    => '',
-            'resultado'       => '',
+            'estado_nuevo' => '',
+            'resultado' => '',
         ];
 
         if ($itemsId <= 0 || $itemType === '' || $idUsuario <= 0) {
-            $resultado['resultado'] = 'OMITIDA';
+            $resultado['resultado'] = 'ERROR';
             $resultados[] = $resultado;
-            $totalOmitidas++;
+            $totalError++;
             continue;
         }
 
@@ -253,23 +318,26 @@ try {
             $sqlCheck = "SELECT id, states_id FROM {$tabla} WHERE id = :id LIMIT 1";
             $stmtCheck = $pdo->prepare($sqlCheck);
             $stmtCheck->execute([':id' => $itemsId]);
+
             $registro = $stmtCheck->fetch();
 
             if (!$registro) {
-                throw new RuntimeException("No existe el registro con id {$itemsId} en {$tabla}.");
+                throw new RuntimeException(
+                    "No existe el registro con id {$itemsId} en {$tabla}."
+                );
             }
 
-            $oldStateId = (int)($registro['states_id'] ?? 0);
+            $oldStateId = (int) ($registro['states_id'] ?? 0);
             $oldStateName = obtenerNombreEstado($pdo, $oldStateId);
-            $newStateName = obtenerNombreEstado($pdo, $NUEVO_ESTADO_ID);
+            $newStateName = obtenerNombreEstado($pdo, $nuevoEstadoId);
 
             $oldValue = $oldStateName . " ({$oldStateId})";
-            $newValue = $newStateName . " ({$NUEVO_ESTADO_ID})";
+            $newValue = $newStateName . " ({$nuevoEstadoId})";
 
             $resultado['estado_anterior'] = $oldValue;
             $resultado['estado_nuevo'] = $newValue;
 
-            if ($oldStateId === $NUEVO_ESTADO_ID) {
+            if ($oldStateId === $nuevoEstadoId) {
                 $resultado['resultado'] = 'YA ESTABA DESAFECTADO';
                 $resultados[] = $resultado;
                 $totalYaEstaban++;
@@ -278,10 +346,12 @@ try {
 
             $pdo->beginTransaction();
 
-            $stmtUpdate = $pdo->prepare("UPDATE {$tabla} SET states_id = :states_id WHERE id = :id");
+            $stmtUpdate = $pdo->prepare(
+                "UPDATE {$tabla} SET states_id = :states_id WHERE id = :id"
+            );
             $stmtUpdate->execute([
-                ':states_id' => $NUEVO_ESTADO_ID,
-                ':id'        => $itemsId,
+                ':states_id' => $nuevoEstadoId,
+                ':id' => $itemsId,
             ]);
 
             $userName = obtenerNombreUsuario($pdo, $idUsuario);
@@ -315,12 +385,12 @@ try {
 
             $stmtLog = $pdo->prepare($sqlLog);
             $stmtLog->execute([
-                ':itemtype'         => $itemType,
-                ':items_id'         => $itemsId,
-                ':user_name'        => $userName,
-                ':id_search_option' => $ID_SEARCH_OPTION_ESTADO,
-                ':old_value'        => $oldValue,
-                ':new_value'        => $newValue,
+                ':itemtype' => $itemType,
+                ':items_id' => $itemsId,
+                ':user_name' => $userName,
+                ':id_search_option' => $idSearchOptionEstado,
+                ':old_value' => $oldValue,
+                ':new_value' => $newValue,
             ]);
 
             $pdo->commit();
@@ -344,11 +414,6 @@ try {
     die('<h2>Error en el proceso</h2><pre>' . h($e->getMessage()) . '</pre>');
 }
 
-/*
-|--------------------------------------------------------------------------
-| SALIDA HTML
-|--------------------------------------------------------------------------
-*/
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -399,11 +464,6 @@ try {
             font-weight: bold;
         }
 
-        .omitida {
-            color: #9a6700;
-            font-weight: bold;
-        }
-
         .ya-estaba {
             color: #005cc5;
             font-weight: bold;
@@ -415,7 +475,8 @@ try {
             background: #fff;
         }
 
-        th, td {
+        th,
+        td {
             border: 1px solid #ddd;
             padding: 10px;
             vertical-align: top;
@@ -434,11 +495,18 @@ try {
     <div class="bloque">
         <h2>Resumen</h2>
         <div class="resumen">
-            <div class="tarjeta"><strong>Total filas:</strong><br><?= (int)$totalFilas ?></div>
-            <div class="tarjeta"><span class="ok">Correctas:</span><br><?= (int)$totalOk ?></div>
-            <div class="tarjeta"><span class="ya-estaba">Ya estaban desafectadas:</span><br><?= (int)$totalYaEstaban ?></div>
-            <div class="tarjeta"><span class="error">Errores:</span><br><?= (int)$totalError ?></div>
-            <div class="tarjeta"><span class="omitida">Omitidas:</span><br><?= (int)$totalOmitidas ?></div>
+            <div class="tarjeta">
+                <strong>Total filas:</strong><br><?= (int) $totalFilas ?>
+            </div>
+            <div class="tarjeta">
+                <span class="ok">Correctas:</span><br><?= (int) $totalOk ?>
+            </div>
+            <div class="tarjeta">
+                <span class="ya-estaba">Ya estaban desafectados:</span><br><?= (int) $totalYaEstaban ?>
+            </div>
+            <div class="tarjeta">
+                <span class="error">Errores:</span><br><?= (int) $totalError ?>
+            </div>
         </div>
     </div>
 
@@ -459,24 +527,22 @@ try {
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($resultados as $r): ?>
+                <?php foreach ($resultados as $resultadoFila): ?>
                     <tr>
-                        <td><?= (int)$r['fila'] ?></td>
-                        <td><?= (int)$r['items_id'] ?></td>
-                        <td><?= h($r['itemtype']) ?></td>
-                        <td><?= h($r['tabla']) ?></td>
-                        <td><?= (int)$r['usuario'] ?></td>
-                        <td><?= h($r['estado_anterior']) ?></td>
-                        <td><?= h($r['estado_nuevo']) ?></td>
+                        <td><?= (int) $resultadoFila['fila'] ?></td>
+                        <td><?= (int) $resultadoFila['items_id'] ?></td>
+                        <td><?= h($resultadoFila['itemtype']) ?></td>
+                        <td><?= h($resultadoFila['tabla']) ?></td>
+                        <td><?= (int) $resultadoFila['usuario'] ?></td>
+                        <td><?= h($resultadoFila['estado_anterior']) ?></td>
+                        <td><?= h($resultadoFila['estado_nuevo']) ?></td>
                         <td>
-                            <?php if ($r['resultado'] === 'OK'): ?>
-                                <span class="ok"><?= h($r['resultado']) ?></span>
-                            <?php elseif ($r['resultado'] === 'ERROR'): ?>
-                                <span class="error"><?= h($r['resultado']) ?></span>
-                            <?php elseif ($r['resultado'] === 'YA ESTABA DESAFECTADO'): ?>
-                                <span class="ya-estaba"><?= h($r['resultado']) ?></span>
-                            <?php else: ?>
-                                <span class="omitida"><?= h($r['resultado']) ?></span>
+                            <?php if ($resultadoFila['resultado'] === 'OK'): ?>
+                                <span class="ok"><?= h($resultadoFila['resultado']) ?></span>
+                            <?php elseif ($resultadoFila['resultado'] === 'ERROR'): ?>
+                                <span class="error"><?= h($resultadoFila['resultado']) ?></span>
+                            <?php elseif ($resultadoFila['resultado'] === 'YA ESTABA DESAFECTADO'): ?>
+                                <span class="ya-estaba"><?= h($resultadoFila['resultado']) ?></span>
                             <?php endif; ?>
                         </td>
                     </tr>
