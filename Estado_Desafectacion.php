@@ -15,6 +15,7 @@ $DB_NAME = 'glpi_externos_pre';
 $DB_USER = 'root';
 $DB_PASS = '';
 $NUEVO_ESTADO_ID = 3;
+$ID_SEARCH_OPTION_ESTADO = 31;
 
 /*
 |--------------------------------------------------------------------------
@@ -35,17 +36,17 @@ function normalizarCabecera(string $valor): string
 function obtenerTablaItem(string $itemType): ?string
 {
     $mapa = [
-        'Computer'                      => 'glpi_computers',
-        'Monitor'                       => 'glpi_monitors',
-        'Printer'                       => 'glpi_printers',
-        'Peripheral'                    => 'glpi_peripherals',
-        'Phone'                         => 'glpi_phones',
-        'NetworkEquipment'              => 'glpi_networkequipments',
-        'Software'                      => 'glpi_softwares',
-        'PluginGenericobjectPantalla'   => 'glpi_plugin_genericobject_pantallas',
-        'PluginGenericobjectProyector'  => 'glpi_plugin_genericobject_proyectors',
-        'PluginGenericobjectAudiovisual'=> 'glpi_plugin_genericobject_audiovisuals',
-        'PluginGenericobjectRobotica'   => 'glpi_plugin_genericobject_roboticas',
+        'Computer' => 'glpi_computers',
+        'Monitor' => 'glpi_monitors',
+        'Printer' => 'glpi_printers',
+        'Peripheral' => 'glpi_peripherals',
+        'Phone' => 'glpi_phones',
+        'NetworkEquipment' => 'glpi_networkequipments',
+        'Software' => 'glpi_softwares',
+        'PluginGenericobjectPantalla' => 'glpi_plugin_genericobject_pantallas',
+        'PluginGenericobjectProyector' => 'glpi_plugin_genericobject_proyectors',
+        'PluginGenericobjectAudiovisual' => 'glpi_plugin_genericobject_audiovisuals',
+        'PluginGenericobjectRobotica' => 'glpi_plugin_genericobject_roboticas',
         'PluginGenericobjectArmarioscarga' => 'glpi_plugin_genericobject_armarioscargas',
     ];
 
@@ -148,7 +149,7 @@ try {
         $DB_USER,
         $DB_PASS,
         [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]
     );
@@ -227,12 +228,10 @@ try {
             'estado_anterior' => '',
             'estado_nuevo'    => '',
             'resultado'       => '',
-            'mensaje'         => '',
         ];
 
         if ($itemsId <= 0 || $itemType === '' || $idUsuario <= 0) {
             $resultado['resultado'] = 'OMITIDA';
-            $resultado['mensaje'] = 'Datos incompletos o no válidos.';
             $resultados[] = $resultado;
             $totalOmitidas++;
             continue;
@@ -242,7 +241,6 @@ try {
 
         if ($tabla === null) {
             $resultado['resultado'] = 'ERROR';
-            $resultado['mensaje'] = "No hay tabla asociada para el itemtype '{$itemType}'.";
             $resultados[] = $resultado;
             $totalError++;
             continue;
@@ -301,7 +299,7 @@ try {
                     0,
                     :user_name,
                     NOW(),
-                    31,
+                    :id_search_option,
                     :old_value,
                     :new_value
                 )
@@ -309,17 +307,17 @@ try {
 
             $stmtLog = $pdo->prepare($sqlLog);
             $stmtLog->execute([
-                ':itemtype'  => $itemType,
-                ':items_id'  => $itemsId,
-                ':user_name' => $userName,
-                ':old_value' => $oldValue,
-                ':new_value' => $newValue,
+                ':itemtype'         => $itemType,
+                ':items_id'         => $itemsId,
+                ':user_name'        => $userName,
+                ':id_search_option' => $ID_SEARCH_OPTION_ESTADO,
+                ':old_value'        => $oldValue,
+                ':new_value'        => $newValue,
             ]);
 
             $pdo->commit();
 
             $resultado['resultado'] = 'OK';
-            $resultado['mensaje'] = 'Update e insert realizados correctamente.';
             $resultados[] = $resultado;
             $totalOk++;
         } catch (Throwable $e) {
@@ -328,7 +326,6 @@ try {
             }
 
             $resultado['resultado'] = 'ERROR';
-            $resultado['mensaje'] = $e->getMessage();
             $resultados[] = $resultado;
             $totalError++;
         }
@@ -425,15 +422,7 @@ try {
 </head>
 <body>
 
-    <h1>Proceso de desafectación</h1>
-
-    <div class="bloque">
-        <h2>Información</h2>
-        <p><strong>Base de datos:</strong> <?= h($DB_NAME) ?></p>
-        <p><strong>CSV:</strong> <?= h($rutaCsv) ?></p>
-        <p><strong>Delimitador detectado:</strong> <code><?= h($delimitador === "\t" ? '\t' : $delimitador) ?></code></p>
-        <p><strong>Estado nuevo aplicado:</strong> <?= (int)$NUEVO_ESTADO_ID ?></p>
-    </div>
+    <h1>Resultado de la desafectación</h1>
 
     <div class="bloque">
         <h2>Resumen</h2>
@@ -459,7 +448,6 @@ try {
                     <th>Estado anterior</th>
                     <th>Estado nuevo</th>
                     <th>Resultado</th>
-                    <th>Mensaje</th>
                 </tr>
             </thead>
             <tbody>
@@ -481,7 +469,6 @@ try {
                                 <span class="omitida"><?= h($r['resultado']) ?></span>
                             <?php endif; ?>
                         </td>
-                        <td><?= h($r['mensaje']) ?></td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
