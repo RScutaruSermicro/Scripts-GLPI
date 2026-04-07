@@ -26,6 +26,11 @@ $nuevoEstadoId = 3;
 $idSearchOptionEstado = 31;
 
 /**
+ * linked_action usado en glpi_logs para enlazar con ticket.
+ */
+$linkedActionTicket = 15;
+
+/**
  * -------------------------------------------------------------------------
  * FUNCIONES AUXILIARES
  * -------------------------------------------------------------------------
@@ -33,10 +38,6 @@ $idSearchOptionEstado = 31;
 
 /**
  * Escapa texto para salida HTML.
- *
- * @param string $texto Texto a escapar.
- *
- * @return string
  */
 function h(string $texto): string
 {
@@ -45,10 +46,6 @@ function h(string $texto): string
 
 /**
  * Normaliza una cabecera del CSV.
- *
- * @param string $valor Cabecera original.
- *
- * @return string
  */
 function normalizarCabecera(string $valor): string
 {
@@ -59,10 +56,6 @@ function normalizarCabecera(string $valor): string
 
 /**
  * Devuelve la tabla GLPI asociada a un itemtype.
- *
- * @param string $itemType Tipo de elemento GLPI.
- *
- * @return string|null
  */
 function obtenerTablaItem(string $itemType): ?string
 {
@@ -86,10 +79,6 @@ function obtenerTablaItem(string $itemType): ?string
 
 /**
  * Detecta automáticamente el delimitador del CSV.
- *
- * @param string $rutaCsv Ruta absoluta del fichero CSV.
- *
- * @return string
  */
 function detectarDelimitador(string $rutaCsv): string
 {
@@ -123,11 +112,6 @@ function detectarDelimitador(string $rutaCsv): string
 
 /**
  * Obtiene el nombre visible del usuario para guardarlo en glpi_logs.
- *
- * @param PDO $pdo Conexión PDO.
- * @param int $idUsuario ID del usuario GLPI.
- *
- * @return string
  */
 function obtenerNombreUsuario(PDO $pdo, int $idUsuario): string
 {
@@ -155,11 +139,6 @@ function obtenerNombreUsuario(PDO $pdo, int $idUsuario): string
 
 /**
  * Obtiene el nombre de un estado GLPI a partir de su ID.
- *
- * @param PDO $pdo Conexión PDO.
- * @param int $estadoId ID del estado.
- *
- * @return string
  */
 function obtenerNombreEstado(PDO $pdo, int $estadoId): string
 {
@@ -177,12 +156,51 @@ function obtenerNombreEstado(PDO $pdo, int $estadoId): string
 }
 
 /**
+ * Obtiene el texto visible del ticket para guardarlo en glpi_logs.
+ *
+ * Formato:
+ *   Título ticket (ID)
+ */
+function obtenerNombreTicket(PDO $pdo, int $ticketId): string
+{
+    $stmt = $pdo->prepare("
+        SELECT CONCAT(COALESCE(name, ''), ' ({$ticketId})') AS nombre
+        FROM glpi_tickets
+        WHERE id = :id
+        LIMIT 1
+    ");
+    $stmt->execute([':id' => $ticketId]);
+
+    $fila = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    return $fila['nombre'] ?? "Ticket ({$ticketId})";
+}
+
+/**
+ * Obtiene el texto visible del dispositivo para guardarlo en glpi_logs.
+ *
+ * Formato:
+ *   Nombre dispositivo (ID)
+ */
+function obtenerNombreDispositivo(PDO $pdo, string $tabla, int $itemsId): string
+{
+    $sql = "
+        SELECT CONCAT(COALESCE(name, ''), ' ({$itemsId})') AS nombre
+        FROM {$tabla}
+        WHERE id = :id
+        LIMIT 1
+    ";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([':id' => $itemsId]);
+
+    $fila = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    return $fila['nombre'] ?? "Elemento ({$itemsId})";
+}
+
+/**
  * Lee la primera línea del CSV y devuelve sus cabeceras.
- *
- * @param string $rutaCsv Ruta absoluta del CSV.
- * @param string $delimitador Delimitador detectado.
- *
- * @return array
  */
 function leerCabecerasCsv(string $rutaCsv, string $delimitador): array
 {
@@ -200,6 +218,205 @@ function leerCabecerasCsv(string $rutaCsv, string $delimitador): array
     }
 
     return $cabeceras;
+}
+
+/**
+ * Comprueba si existe el ticket.
+ */
+function existeTicket(PDO $pdo, int $ticketId): bool
+{
+    $stmt = $pdo->prepare("
+        SELECT id
+        FROM glpi_tickets
+        WHERE id = :id
+        LIMIT 1
+    ");
+    $stmt->execute([':id' => $ticketId]);
+
+    return (bool) $stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Comprueba si el vínculo dispositivo-ticket ya existe.
+ */
+function existeVinculoTicket(PDO $pdo, string $itemType, int $itemsId, int $ticketId): bool
+{
+    $stmt = $pdo->prepare("
+        SELECT id
+        FROM glpi_items_tickets
+        WHERE itemtype = :itemtype
+          AND items_id = :items_id
+          AND tickets_id = :tickets_id
+        LIMIT 1
+    ");
+    $stmt->execute([
+        ':itemtype' => $itemType,
+        ':items_id' => $itemsId,
+        ':tickets_id' => $ticketId,
+    ]);
+
+    return (bool) $stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Inserta un log de cambio de estado en glpi_logs.
+ */
+function insertarLogCambioEstado(
+    PDO $pdo,
+    string $itemType,
+    int $itemsId,
+    string $userName,
+    int $idSearchOptionEstado,
+    string $oldValue,
+    string $newValue
+): void {
+    $sqlLog = "
+        INSERT INTO glpi_logs
+        (
+            itemtype,
+            items_id,
+            itemtype_link,
+            linked_action,
+            user_name,
+            date_mod,
+            id_search_option,
+            old_value,
+            new_value
+        )
+        VALUES
+        (
+            :itemtype,
+            :items_id,
+            '',
+            0,
+            :user_name,
+            NOW(),
+            :id_search_option,
+            :old_value,
+            :new_value
+        )
+    ";
+
+    $stmtLog = $pdo->prepare($sqlLog);
+    $stmtLog->execute([
+        ':itemtype' => $itemType,
+        ':items_id' => $itemsId,
+        ':user_name' => $userName,
+        ':id_search_option' => $idSearchOptionEstado,
+        ':old_value' => $oldValue,
+        ':new_value' => $newValue,
+    ]);
+}
+
+/**
+ * Inserta el vínculo dispositivo-ticket y los dos logs de histórico:
+ * - uno en el dispositivo
+ * - otro en el ticket
+ */
+function insertarVinculoTicketYLogs(
+    PDO $pdo,
+    string $itemType,
+    string $tabla,
+    int $itemsId,
+    int $ticketId,
+    string $userName,
+    int $linkedActionTicket
+): void {
+    $stmtRelacion = $pdo->prepare("
+        INSERT INTO glpi_items_tickets
+        (
+            itemtype,
+            items_id,
+            tickets_id
+        )
+        VALUES
+        (
+            :itemtype,
+            :items_id,
+            :tickets_id
+        )
+    ");
+
+    $stmtRelacion->execute([
+        ':itemtype' => $itemType,
+        ':items_id' => $itemsId,
+        ':tickets_id' => $ticketId,
+    ]);
+
+    $nombreTicket = obtenerNombreTicket($pdo, $ticketId);
+    $nombreDispositivo = obtenerNombreDispositivo($pdo, $tabla, $itemsId);
+
+    // Log en el dispositivo
+    $stmtLogDispositivo = $pdo->prepare("
+        INSERT INTO glpi_logs
+        (
+            itemtype,
+            items_id,
+            itemtype_link,
+            linked_action,
+            user_name,
+            date_mod,
+            id_search_option,
+            old_value,
+            new_value
+        )
+        VALUES
+        (
+            :itemtype,
+            :items_id,
+            'Ticket',
+            :linked_action,
+            :user_name,
+            NOW(),
+            0,
+            '',
+            :new_value
+        )
+    ");
+
+    $stmtLogDispositivo->execute([
+        ':itemtype' => $itemType,
+        ':items_id' => $itemsId,
+        ':linked_action' => $linkedActionTicket,
+        ':user_name' => $userName,
+        ':new_value' => $nombreTicket,
+    ]);
+
+    // Log en el ticket
+    $stmtLogTicket = $pdo->prepare("
+        INSERT INTO glpi_logs
+        (
+            itemtype,
+            items_id,
+            itemtype_link,
+            linked_action,
+            user_name,
+            date_mod,
+            id_search_option,
+            old_value,
+            new_value
+        )
+        VALUES
+        (
+            'Ticket',
+            :ticket_id,
+            :itemtype_link,
+            :linked_action,
+            :user_name,
+            NOW(),
+            0,
+            '',
+            :new_value
+        )
+    ");
+
+    $stmtLogTicket->execute([
+        ':ticket_id' => $ticketId,
+        ':itemtype_link' => $itemType,
+        ':linked_action' => $linkedActionTicket,
+        ':user_name' => $userName,
+        ':new_value' => $nombreDispositivo,
+    ]);
 }
 
 /**
@@ -260,9 +477,9 @@ try {
     $cabecerasNormalizadas = array_map('normalizarCabecera', $cabeceras);
     $indices = array_flip($cabecerasNormalizadas);
 
-    if (!isset($indices['id_dispositivo'], $indices['itemtype'], $indices['id_user'])) {
+    if (!isset($indices['id_dispositivo'], $indices['itemtype'], $indices['id_user'], $indices['ticket_id'])) {
         throw new RuntimeException(
-            'El CSV debe contener las columnas: id_dispositivo;itemtype;id_user'
+            'El CSV debe contener las columnas: id_dispositivo;itemtype;id_user;ticket_id'
         );
     }
 
@@ -284,6 +501,7 @@ try {
         $itemsId = (int) ($fila[$indices['id_dispositivo']] ?? 0);
         $itemType = trim((string) ($fila[$indices['itemtype']] ?? ''));
         $idUsuario = (int) ($fila[$indices['id_user']] ?? 0);
+        $ticketId = (int) ($fila[$indices['ticket_id']] ?? 0);
 
         $resultado = [
             'fila' => $totalFilas,
@@ -291,12 +509,13 @@ try {
             'itemtype' => $itemType,
             'tabla' => '',
             'usuario' => $idUsuario,
+            'ticket_id' => $ticketId,
             'estado_anterior' => '',
             'estado_nuevo' => '',
             'resultado' => '',
         ];
 
-        if ($itemsId <= 0 || $itemType === '' || $idUsuario <= 0) {
+        if ($itemsId <= 0 || $itemType === '' || $idUsuario <= 0 || $ticketId <= 0) {
             $resultado['resultado'] = 'ERROR';
             $resultados[] = $resultado;
             $totalError++;
@@ -327,6 +546,12 @@ try {
                 );
             }
 
+            if (!existeTicket($pdo, $ticketId)) {
+                throw new RuntimeException(
+                    "No existe el ticket con id {$ticketId}."
+                );
+            }
+
             $oldStateId = (int) ($registro['states_id'] ?? 0);
             $oldStateName = obtenerNombreEstado($pdo, $oldStateId);
             $newStateName = obtenerNombreEstado($pdo, $nuevoEstadoId);
@@ -337,67 +562,54 @@ try {
             $resultado['estado_anterior'] = $oldValue;
             $resultado['estado_nuevo'] = $newValue;
 
-            if ($oldStateId === $nuevoEstadoId) {
-                $resultado['resultado'] = 'YA ESTABA DESAFECTADO';
-                $resultados[] = $resultado;
-                $totalYaEstaban++;
-                continue;
-            }
+            $yaEstabaDesafectado = ($oldStateId === $nuevoEstadoId);
+            $userName = obtenerNombreUsuario($pdo, $idUsuario);
 
             $pdo->beginTransaction();
 
-            $stmtUpdate = $pdo->prepare(
-                "UPDATE {$tabla} SET states_id = :states_id WHERE id = :id"
-            );
-            $stmtUpdate->execute([
-                ':states_id' => $nuevoEstadoId,
-                ':id' => $itemsId,
-            ]);
+            if (!$yaEstabaDesafectado) {
+                $stmtUpdate = $pdo->prepare(
+                    "UPDATE {$tabla} SET states_id = :states_id WHERE id = :id"
+                );
+                $stmtUpdate->execute([
+                    ':states_id' => $nuevoEstadoId,
+                    ':id' => $itemsId,
+                ]);
 
-            $userName = obtenerNombreUsuario($pdo, $idUsuario);
+                insertarLogCambioEstado(
+                    $pdo,
+                    $itemType,
+                    $itemsId,
+                    $userName,
+                    $idSearchOptionEstado,
+                    $oldValue,
+                    $newValue
+                );
+            }
 
-            $sqlLog = "
-                INSERT INTO glpi_logs
-                (
-                    itemtype,
-                    items_id,
-                    itemtype_link,
-                    linked_action,
-                    user_name,
-                    date_mod,
-                    id_search_option,
-                    old_value,
-                    new_value
-                )
-                VALUES
-                (
-                    :itemtype,
-                    :items_id,
-                    '',
-                    0,
-                    :user_name,
-                    NOW(),
-                    :id_search_option,
-                    :old_value,
-                    :new_value
-                )
-            ";
-
-            $stmtLog = $pdo->prepare($sqlLog);
-            $stmtLog->execute([
-                ':itemtype' => $itemType,
-                ':items_id' => $itemsId,
-                ':user_name' => $userName,
-                ':id_search_option' => $idSearchOptionEstado,
-                ':old_value' => $oldValue,
-                ':new_value' => $newValue,
-            ]);
+            if (!existeVinculoTicket($pdo, $itemType, $itemsId, $ticketId)) {
+                insertarVinculoTicketYLogs(
+                    $pdo,
+                    $itemType,
+                    $tabla,
+                    $itemsId,
+                    $ticketId,
+                    $userName,
+                    $linkedActionTicket
+                );
+            }
 
             $pdo->commit();
 
-            $resultado['resultado'] = 'OK';
+            if ($yaEstabaDesafectado) {
+                $resultado['resultado'] = 'YA ESTABA DESAFECTADO';
+                $totalYaEstaban++;
+            } else {
+                $resultado['resultado'] = 'OK';
+                $totalOk++;
+            }
+
             $resultados[] = $resultado;
-            $totalOk++;
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
@@ -521,6 +733,7 @@ try {
                     <th>Itemtype</th>
                     <th>Tabla</th>
                     <th>Usuario</th>
+                    <th>Ticket</th>
                     <th>Estado anterior</th>
                     <th>Estado nuevo</th>
                     <th>Resultado</th>
@@ -534,6 +747,7 @@ try {
                         <td><?= h($resultadoFila['itemtype']) ?></td>
                         <td><?= h($resultadoFila['tabla']) ?></td>
                         <td><?= (int) $resultadoFila['usuario'] ?></td>
+                        <td><?= (int) $resultadoFila['ticket_id'] ?></td>
                         <td><?= h($resultadoFila['estado_anterior']) ?></td>
                         <td><?= h($resultadoFila['estado_nuevo']) ?></td>
                         <td>
