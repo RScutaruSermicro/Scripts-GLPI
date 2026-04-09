@@ -302,15 +302,10 @@ if (
             ['Número Serie', 'Numero Serie', 'Número Serial', 'Numero Serial']
         );
 
-        $indiceTipo = obtenerIndiceCabecera(
-            $cabecerasCsv,
-            ['Tipo']
-        );
-
-        $indiceModelo = obtenerIndiceCabecera(
-            $cabecerasCsv,
-            ['Modelo']
-        );
+        $indiceTipo = obtenerIndiceCabecera($cabecerasCsv, ['Tipo']);
+        $indiceModelo = obtenerIndiceCabecera($cabecerasCsv, ['Modelo']);
+        $indiceFabricante = obtenerIndiceCabecera($cabecerasCsv, ['Fabricante']);
+        $indiceProveedor = obtenerIndiceCabecera($cabecerasCsv, ['Proveedor']);
 
         if ($indiceNumeroSerie === null) {
             fclose($handle);
@@ -325,6 +320,16 @@ if (
         if ($indiceModelo === null) {
             fclose($handle);
             throw new RuntimeException('No existe la columna "Modelo" en el CSV.');
+        }
+
+        if ($indiceFabricante === null) {
+            fclose($handle);
+            throw new RuntimeException('No existe la columna "Fabricante" en el CSV.');
+        }
+
+        if ($indiceProveedor === null) {
+            fclose($handle);
+            throw new RuntimeException('No existe la columna "Proveedor" en el CSV.');
         }
 
         $filasCsvCrudas = [];
@@ -349,8 +354,6 @@ if (
         }
 
         $serialesExistentes = [];
-        $tiposExistentes = [];
-        $modelosExistentes = [];
 
         $pdo = new PDO(
             "mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4",
@@ -387,6 +390,8 @@ if (
 
         $tiposExistentes = cargarNombresTabla($pdo, $tablaTipos);
         $modelosExistentes = cargarNombresTabla($pdo, $tablaModelos);
+        $fabricantesExistentes = cargarNombresTabla($pdo, 'glpi_manufacturers');
+        $proveedoresExistentes = cargarNombresTabla($pdo, 'glpi_suppliers');
 
         foreach ($filasCsvCrudas as $fila) {
             $observaciones = [];
@@ -395,10 +400,14 @@ if (
             $serial = trim((string) ($fila[$indiceNumeroSerie] ?? ''));
             $tipo = trim((string) ($fila[$indiceTipo] ?? ''));
             $modelo = trim((string) ($fila[$indiceModelo] ?? ''));
+            $fabricante = trim((string) ($fila[$indiceFabricante] ?? ''));
+            $proveedor = trim((string) ($fila[$indiceProveedor] ?? ''));
 
             $serialNormalizado = normalizarTexto($serial);
             $tipoNormalizado = normalizarTexto($tipo);
             $modeloNormalizado = normalizarTexto($modelo);
+            $fabricanteNormalizado = normalizarTexto($fabricante);
+            $proveedorNormalizado = normalizarTexto($proveedor);
 
             if (
                 $serial !== ''
@@ -417,6 +426,16 @@ if (
             if ($modelo === '' || !isset($modelosExistentes[$modeloNormalizado])) {
                 $observaciones[] = 'El modelo no existe en la base de datos';
                 $celdasError[] = $indiceModelo;
+            }
+
+            if ($fabricante === '' || !isset($fabricantesExistentes[$fabricanteNormalizado])) {
+                $observaciones[] = 'El fabricante no existe en la base de datos';
+                $celdasError[] = $indiceFabricante;
+            }
+
+            if ($proveedor === '' || !isset($proveedoresExistentes[$proveedorNormalizado])) {
+                $observaciones[] = 'El proveedor no existe en la base de datos';
+                $celdasError[] = $indiceProveedor;
             }
 
             $filasTabla[] = [
