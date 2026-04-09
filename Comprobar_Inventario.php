@@ -16,6 +16,11 @@ $dbUser = 'root';
 $dbPass = '';
 
 /**
+ * Valor de número de serie que no debe dar error.
+ */
+$serialIgnorado = 'S/N';
+
+/**
  * -------------------------------------------------------------------------
  * FUNCIONES AUXILIARES
  * -------------------------------------------------------------------------
@@ -111,8 +116,58 @@ function obtenerIndiceCabecera(array $cabeceras, array $posiblesNombres): ?int
 }
 
 /**
+ * Devuelve la configuración de comprobación según la categoría seleccionada.
+ *
+ * Se asume que en todas estas tablas el campo del número de serie es "serial".
+ * Si alguna tabla usa otro nombre, cámbialo aquí.
+ */
+function obtenerConfiguracionInventario(string $tipoSeleccionado): ?array
+{
+    $mapa = [
+        'AudioVisuales' => [
+            'tabla' => 'glpi_plugin_genericobject_audiovisuals',
+            'campo_serial' => 'serial',
+        ],
+        'Dispositivos de Red' => [
+            'tabla' => 'glpi_networkequipments',
+            'campo_serial' => 'serial',
+        ],
+        'Monitores' => [
+            'tabla' => 'glpi_monitors',
+            'campo_serial' => 'serial',
+        ],
+        'Ordenadores' => [
+            'tabla' => 'glpi_computers',
+            'campo_serial' => 'serial',
+        ],
+        'Pantallas' => [
+            'tabla' => 'glpi_plugin_genericobject_pantallas',
+            'campo_serial' => 'serial',
+        ],
+        'Periféricos' => [
+            'tabla' => 'glpi_peripherals',
+            'campo_serial' => 'serial',
+        ],
+        'Proyectores' => [
+            'tabla' => 'glpi_plugin_genericobject_proyectors',
+            'campo_serial' => 'serial',
+        ],
+        'Robóticas' => [
+            'tabla' => 'glpi_plugin_genericobject_roboticas',
+            'campo_serial' => 'serial',
+        ],
+        'Teléfonos' => [
+            'tabla' => 'glpi_phones',
+            'campo_serial' => 'serial',
+        ],
+    ];
+
+    return $mapa[$tipoSeleccionado] ?? null;
+}
+
+/**
  * -------------------------------------------------------------------------
- * DATOS DE FORMULARIO
+ * DATOS DEL FORMULARIO
  * -------------------------------------------------------------------------
  */
 $opcionesInventario = [
@@ -128,20 +183,29 @@ $opcionesInventario = [
 ];
 
 $tipoSeleccionado = $_POST['tipo_inventario'] ?? '';
-$coincidencias = [];
-$mensaje = '';
 $error = '';
+$mensaje = '';
+$cabecerasCsv = [];
+$filasTabla = [];
 
 /**
  * -------------------------------------------------------------------------
- * PROCESO SOLO PARA TELÉFONOS
+ * PROCESO
  * -------------------------------------------------------------------------
  */
 if (
     $_SERVER['REQUEST_METHOD'] === 'POST'
-    && $tipoSeleccionado === 'Teléfonos'
+    && $tipoSeleccionado !== ''
 ) {
     try {
+        $configuracion = obtenerConfiguracionInventario($tipoSeleccionado);
+
+        if ($configuracion === null) {
+            throw new RuntimeException(
+                'La categoría seleccionada no tiene configuración de comprobación.'
+            );
+        }
+
         if (
             !isset($_FILES['archivo_csv'])
             || !is_array($_FILES['archivo_csv'])
@@ -163,120 +227,115 @@ if (
             throw new RuntimeException('No se pudo abrir el CSV.');
         }
 
-        $cabeceras = fgetcsv($handle, 0, $delimitador);
+        $cabecerasCsv = fgetcsv($handle, 0, $delimitador);
 
-        if ($cabeceras === false) {
+        if ($cabecerasCsv === false) {
             fclose($handle);
             throw new RuntimeException('No se pudieron leer las cabeceras del CSV.');
         }
 
         $indiceNumeroSerie = obtenerIndiceCabecera(
-            $cabeceras,
+            $cabecerasCsv,
             ['Número Serie', 'Numero Serie', 'Número Serial', 'Numero Serial']
-        );
-
-        $indiceCodigoInventario = obtenerIndiceCabecera(
-            $cabeceras,
-            ['Codigo Inventario', 'Código Inventario']
-        );
-
-        $indiceNombre = obtenerIndiceCabecera(
-            $cabeceras,
-            ['Nombre']
         );
 
         if ($indiceNumeroSerie === null) {
             fclose($handle);
-            throw new RuntimeException(
-                'No existe la columna "Número Serie" en el CSV.'
-            );
+            throw new RuntimeException('No existe la columna "Número Serie" en el CSV.');
         }
 
-        $serialesCsv = [];
-        $filasCsv = [];
+        $filasCsvCrudas = [];
+        $serialesCsvNormalizados = [];
 
         while (($fila = fgetcsv($handle, 0, $delimitador)) !== false) {
             if (count(array_filter($fila, fn($valor) => trim((string) $valor) !== '')) === 0) {
                 continue;
             }
 
-            $serialCsv = trim((string) ($fila[$indiceNumeroSerie] ?? ''));
+            $serial = trim((string) ($fila[$indiceNumeroSerie] ?? ''));
 
-            if ($serialCsv === '') {
-                continue;
+            $filasCsvCrudas[] = $fila;
+
+            if ($serial !== '' && $serial !== $serialIgnorado) {
+                $serialesCsvNormalizados[] = normalizarTexto($serial);
             }
-
-            $serialesCsv[] = $serialCsv;
-            $filasCsv[$serialCsv][] = [
-                'codigo_inventario' => $indiceCodigoInventario !== null
-                    ? trim((string) ($fila[$indiceCodigoInventario] ?? ''))
-                    : '',
-                'nombre_csv' => $indiceNombre !== null
-                    ? trim((string) ($fila[$indiceNombre] ?? ''))
-                    : '',
-                'serial_csv' => $serialCsv,
-            ];
         }
 
         fclose($handle);
 
-        $serialesCsv = array_values(array_unique($serialesCsv));
-
-        if ($serialesCsv === []) {
-            throw new RuntimeException('El CSV no contiene valores en la columna "Número Serie".');
+        if ($filasCsvCrudas === []) {
+            throw new RuntimeException('El CSV no contiene filas de datos.');
         }
 
-        $pdo = new PDO(
-            "mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4",
-            $dbUser,
-            $dbPass,
-            [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            ]
-        );
+        $serialesCsvNormalizados = array_values(array_unique($serialesCsvNormalizados));
+        $serialesExistentes = [];
 
-        $placeholders = implode(',', array_fill(0, count($serialesCsv), '?'));
+        if ($serialesCsvNormalizados !== []) {
+            $pdo = new PDO(
+                "mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4",
+                $dbUser,
+                $dbPass,
+                [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                ]
+            );
 
-        $sql = "
-            SELECT
-                id,
-                name,
-                serial
-            FROM glpi_phones
-            WHERE serial IN ($placeholders)
-            ORDER BY serial, id
-        ";
+            $tabla = $configuracion['tabla'];
+            $campoSerial = $configuracion['campo_serial'];
 
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($serialesCsv);
+            $sql = "
+                SELECT {$campoSerial} AS serial
+                FROM {$tabla}
+                WHERE {$campoSerial} IS NOT NULL
+                  AND {$campoSerial} <> ''
+            ";
 
-        $resultadosBd = $stmt->fetchAll();
+            $stmt = $pdo->query($sql);
+            $resultadosBd = $stmt->fetchAll();
 
-        foreach ($resultadosBd as $filaBd) {
-            $serialBd = trim((string) ($filaBd['serial'] ?? ''));
+            foreach ($resultadosBd as $filaBd) {
+                $serialBd = trim((string) ($filaBd['serial'] ?? ''));
 
-            if ($serialBd === '') {
-                continue;
-            }
-
-            if (!isset($filasCsv[$serialBd])) {
-                continue;
-            }
-
-            foreach ($filasCsv[$serialBd] as $filaCsv) {
-                $coincidencias[] = [
-                    'codigo_inventario_csv' => $filaCsv['codigo_inventario'],
-                    'nombre_csv' => $filaCsv['nombre_csv'],
-                    'serial_csv' => $filaCsv['serial_csv'],
-                    'id_glpi' => (int) $filaBd['id'],
-                    'nombre_glpi' => (string) ($filaBd['name'] ?? ''),
-                    'serial_glpi' => $serialBd,
-                ];
+                if ($serialBd !== '') {
+                    $serialesExistentes[normalizarTexto($serialBd)] = true;
+                }
             }
         }
 
-        if ($coincidencias === []) {
+        foreach ($filasCsvCrudas as $fila) {
+            $observaciones = [];
+            $celdasError = [];
+
+            $serial = trim((string) ($fila[$indiceNumeroSerie] ?? ''));
+            $serialNormalizado = normalizarTexto($serial);
+
+            if (
+                $serial !== ''
+                && $serial !== $serialIgnorado
+                && isset($serialesExistentes[$serialNormalizado])
+            ) {
+                $observaciones[] = 'El número de serie ya existe';
+                $celdasError[] = $indiceNumeroSerie;
+            }
+
+            $filasTabla[] = [
+                'datos' => $fila,
+                'celdas_error' => $celdasError,
+                'observaciones' => implode(' | ', $observaciones),
+            ];
+        }
+
+        $hayErrores = false;
+
+        foreach ($filasTabla as $filaTabla) {
+            if ($filaTabla['observaciones'] !== '') {
+                $hayErrores = true;
+                break;
+            }
+        }
+
+        if (!$hayErrores) {
             $mensaje = 'No hay coincidencias.';
         }
     } catch (Throwable $e) {
@@ -303,7 +362,7 @@ if (
             border-radius: 8px;
             padding: 16px;
             margin-bottom: 20px;
-            max-width: 1100px;
+            max-width: 1400px;
         }
 
         label {
@@ -340,18 +399,36 @@ if (
             width: 100%;
             border-collapse: collapse;
             background: #fff;
+            font-size: 14px;
         }
 
         th,
         td {
             border: 1px solid #ddd;
-            padding: 10px;
+            padding: 8px;
             text-align: left;
             vertical-align: top;
         }
 
         th {
             background: #f0f0f0;
+            position: sticky;
+            top: 0;
+        }
+
+        .celda-error {
+            background: #fbd5d5;
+            color: #8a1c1c;
+            font-weight: bold;
+        }
+
+        .observacion-error {
+            color: #b42318;
+            font-weight: bold;
+        }
+
+        .tabla-scroll {
+            overflow-x: auto;
         }
     </style>
 </head>
@@ -400,34 +477,36 @@ if (
         </div>
     <?php endif; ?>
 
-    <?php if ($coincidencias !== []): ?>
+    <?php if ($filasTabla !== [] && $cabecerasCsv !== []): ?>
         <div class="bloque">
-            <h2>Coincidencias encontradas</h2>
+            <h2>Resultado de la comprobación</h2>
 
-            <table>
-                <thead>
-                    <tr>
-                        <th>Código inventario CSV</th>
-                        <th>Nombre CSV</th>
-                        <th>Número Serie CSV</th>
-                        <th>ID GLPI</th>
-                        <th>Nombre GLPI</th>
-                        <th>Serial GLPI</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($coincidencias as $coincidencia): ?>
+            <div class="tabla-scroll">
+                <table>
+                    <thead>
                         <tr>
-                            <td><?= h($coincidencia['codigo_inventario_csv']) ?></td>
-                            <td><?= h($coincidencia['nombre_csv']) ?></td>
-                            <td><?= h($coincidencia['serial_csv']) ?></td>
-                            <td><?= (int) $coincidencia['id_glpi'] ?></td>
-                            <td><?= h($coincidencia['nombre_glpi']) ?></td>
-                            <td><?= h($coincidencia['serial_glpi']) ?></td>
+                            <?php foreach ($cabecerasCsv as $cabecera): ?>
+                                <th><?= h((string) $cabecera) ?></th>
+                            <?php endforeach; ?>
+                            <th>Observaciones</th>
                         </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($filasTabla as $filaTabla): ?>
+                            <tr>
+                                <?php foreach ($filaTabla['datos'] as $indice => $valor): ?>
+                                    <td class="<?= in_array($indice, $filaTabla['celdas_error'], true) ? 'celda-error' : '' ?>">
+                                        <?= h((string) $valor) ?>
+                                    </td>
+                                <?php endforeach; ?>
+                                <td class="<?= $filaTabla['observaciones'] !== '' ? 'observacion-error' : '' ?>">
+                                    <?= h($filaTabla['observaciones']) ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
     <?php endif; ?>
 
