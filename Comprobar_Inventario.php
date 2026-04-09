@@ -27,15 +27,34 @@ $serialIgnorado = 'S/N';
  */
 
 /**
+ * Convierte texto a UTF-8 si viene en otra codificación.
+ */
+function convertirAUtf8(string $texto): string
+{
+    if ($texto === '') {
+        return '';
+    }
+
+    if (mb_check_encoding($texto, 'UTF-8')) {
+        return $texto;
+    }
+
+    return mb_convert_encoding($texto, 'UTF-8', 'Windows-1252');
+}
+
+/**
  * Escapa texto para salida HTML.
  */
 function h(string $texto): string
 {
+    $texto = convertirAUtf8($texto);
+
     return htmlspecialchars($texto, ENT_QUOTES, 'UTF-8');
 }
 
 /**
  * Normaliza texto:
+ * - convierte a UTF-8
  * - quita BOM
  * - trim
  * - minúsculas
@@ -43,6 +62,7 @@ function h(string $texto): string
  */
 function normalizarTexto(string $texto): string
 {
+    $texto = convertirAUtf8($texto);
     $texto = preg_replace('/^\xEF\xBB\xBF/', '', $texto);
     $texto = trim($texto);
     $texto = mb_strtolower($texto, 'UTF-8');
@@ -117,52 +137,95 @@ function obtenerIndiceCabecera(array $cabeceras, array $posiblesNombres): ?int
 
 /**
  * Devuelve la configuración de comprobación según la categoría seleccionada.
- *
- * Se asume que en todas estas tablas el campo del número de serie es "serial".
- * Si alguna tabla usa otro nombre, cámbialo aquí.
  */
 function obtenerConfiguracionInventario(string $tipoSeleccionado): ?array
 {
     $mapa = [
         'AudioVisuales' => [
-            'tabla' => 'glpi_plugin_genericobject_audiovisuals',
+            'tabla_serial' => 'glpi_plugin_genericobject_audiovisuals',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_plugin_genericobject_audiovisualmodels',
+            'tabla_tipos' => 'glpi_plugin_genericobject_audiovisualtypes',
         ],
         'Dispositivos de Red' => [
-            'tabla' => 'glpi_networkequipments',
+            'tabla_serial' => 'glpi_networkequipments',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_networkequipmentmodels',
+            'tabla_tipos' => 'glpi_networkequipmenttypes',
         ],
         'Monitores' => [
-            'tabla' => 'glpi_monitors',
+            'tabla_serial' => 'glpi_monitors',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_monitormodels',
+            'tabla_tipos' => 'glpi_monitortypes',
         ],
         'Ordenadores' => [
-            'tabla' => 'glpi_computers',
+            'tabla_serial' => 'glpi_computers',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_computermodels',
+            'tabla_tipos' => 'glpi_computertypes',
         ],
         'Pantallas' => [
-            'tabla' => 'glpi_plugin_genericobject_pantallas',
+            'tabla_serial' => 'glpi_plugin_genericobject_pantallas',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_plugin_genericobject_pantallamodels',
+            'tabla_tipos' => 'glpi_plugin_genericobject_pantallatypes',
         ],
         'Periféricos' => [
-            'tabla' => 'glpi_peripherals',
+            'tabla_serial' => 'glpi_peripherals',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_peripheralmodels',
+            'tabla_tipos' => 'glpi_peripheraltypes',
         ],
         'Proyectores' => [
-            'tabla' => 'glpi_plugin_genericobject_proyectors',
+            'tabla_serial' => 'glpi_plugin_genericobject_proyectors',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_plugin_genericobject_proyectormodels',
+            'tabla_tipos' => 'glpi_plugin_genericobject_proyectortypes',
         ],
         'Robóticas' => [
-            'tabla' => 'glpi_plugin_genericobject_roboticas',
+            'tabla_serial' => 'glpi_plugin_genericobject_roboticas',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_plugin_genericobject_roboticamodels',
+            'tabla_tipos' => 'glpi_plugin_genericobject_roboticatypes',
         ],
         'Teléfonos' => [
-            'tabla' => 'glpi_phones',
+            'tabla_serial' => 'glpi_phones',
             'campo_serial' => 'serial',
+            'tabla_modelos' => 'glpi_phonemodels',
+            'tabla_tipos' => 'glpi_phonetypes',
         ],
     ];
 
     return $mapa[$tipoSeleccionado] ?? null;
+}
+
+/**
+ * Carga una columna name de una tabla y la devuelve como mapa normalizado.
+ */
+function cargarNombresTabla(PDO $pdo, string $tabla): array
+{
+    $sql = "
+        SELECT name
+        FROM {$tabla}
+        WHERE name IS NOT NULL
+          AND name <> ''
+    ";
+
+    $stmt = $pdo->query($sql);
+    $filas = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $resultado = [];
+
+    foreach ($filas as $fila) {
+        $nombre = trim((string) ($fila['name'] ?? ''));
+
+        if ($nombre !== '') {
+            $resultado[normalizarTexto($nombre)] = true;
+        }
+    }
+
+    return $resultado;
 }
 
 /**
@@ -239,26 +302,44 @@ if (
             ['Número Serie', 'Numero Serie', 'Número Serial', 'Numero Serial']
         );
 
+        $indiceTipo = obtenerIndiceCabecera(
+            $cabecerasCsv,
+            ['Tipo']
+        );
+
+        $indiceModelo = obtenerIndiceCabecera(
+            $cabecerasCsv,
+            ['Modelo']
+        );
+
         if ($indiceNumeroSerie === null) {
             fclose($handle);
             throw new RuntimeException('No existe la columna "Número Serie" en el CSV.');
         }
 
+        if ($indiceTipo === null) {
+            fclose($handle);
+            throw new RuntimeException('No existe la columna "Tipo" en el CSV.');
+        }
+
+        if ($indiceModelo === null) {
+            fclose($handle);
+            throw new RuntimeException('No existe la columna "Modelo" en el CSV.');
+        }
+
         $filasCsvCrudas = [];
-        $serialesCsvNormalizados = [];
 
         while (($fila = fgetcsv($handle, 0, $delimitador)) !== false) {
             if (count(array_filter($fila, fn($valor) => trim((string) $valor) !== '')) === 0) {
                 continue;
             }
 
-            $serial = trim((string) ($fila[$indiceNumeroSerie] ?? ''));
+            $filaUtf8 = array_map(
+                static fn($valor): string => convertirAUtf8((string) $valor),
+                $fila
+            );
 
-            $filasCsvCrudas[] = $fila;
-
-            if ($serial !== '' && $serial !== $serialIgnorado) {
-                $serialesCsvNormalizados[] = normalizarTexto($serial);
-            }
+            $filasCsvCrudas[] = $filaUtf8;
         }
 
         fclose($handle);
@@ -267,48 +348,57 @@ if (
             throw new RuntimeException('El CSV no contiene filas de datos.');
         }
 
-        $serialesCsvNormalizados = array_values(array_unique($serialesCsvNormalizados));
         $serialesExistentes = [];
+        $tiposExistentes = [];
+        $modelosExistentes = [];
 
-        if ($serialesCsvNormalizados !== []) {
-            $pdo = new PDO(
-                "mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4",
-                $dbUser,
-                $dbPass,
-                [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                ]
-            );
+        $pdo = new PDO(
+            "mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4",
+            $dbUser,
+            $dbPass,
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            ]
+        );
 
-            $tabla = $configuracion['tabla'];
-            $campoSerial = $configuracion['campo_serial'];
+        $tablaSerial = $configuracion['tabla_serial'];
+        $campoSerial = $configuracion['campo_serial'];
+        $tablaModelos = $configuracion['tabla_modelos'];
+        $tablaTipos = $configuracion['tabla_tipos'];
 
-            $sql = "
-                SELECT {$campoSerial} AS serial
-                FROM {$tabla}
-                WHERE {$campoSerial} IS NOT NULL
-                  AND {$campoSerial} <> ''
-            ";
+        $sqlSerial = "
+            SELECT {$campoSerial} AS serial
+            FROM {$tablaSerial}
+            WHERE {$campoSerial} IS NOT NULL
+              AND {$campoSerial} <> ''
+        ";
 
-            $stmt = $pdo->query($sql);
-            $resultadosBd = $stmt->fetchAll();
+        $stmtSerial = $pdo->query($sqlSerial);
+        $resultadosSerial = $stmtSerial->fetchAll(PDO::FETCH_ASSOC);
 
-            foreach ($resultadosBd as $filaBd) {
-                $serialBd = trim((string) ($filaBd['serial'] ?? ''));
+        foreach ($resultadosSerial as $filaBd) {
+            $serialBd = trim((string) ($filaBd['serial'] ?? ''));
 
-                if ($serialBd !== '') {
-                    $serialesExistentes[normalizarTexto($serialBd)] = true;
-                }
+            if ($serialBd !== '') {
+                $serialesExistentes[normalizarTexto($serialBd)] = true;
             }
         }
+
+        $tiposExistentes = cargarNombresTabla($pdo, $tablaTipos);
+        $modelosExistentes = cargarNombresTabla($pdo, $tablaModelos);
 
         foreach ($filasCsvCrudas as $fila) {
             $observaciones = [];
             $celdasError = [];
 
             $serial = trim((string) ($fila[$indiceNumeroSerie] ?? ''));
+            $tipo = trim((string) ($fila[$indiceTipo] ?? ''));
+            $modelo = trim((string) ($fila[$indiceModelo] ?? ''));
+
             $serialNormalizado = normalizarTexto($serial);
+            $tipoNormalizado = normalizarTexto($tipo);
+            $modeloNormalizado = normalizarTexto($modelo);
 
             if (
                 $serial !== ''
@@ -319,9 +409,19 @@ if (
                 $celdasError[] = $indiceNumeroSerie;
             }
 
+            if ($tipo === '' || !isset($tiposExistentes[$tipoNormalizado])) {
+                $observaciones[] = 'El tipo no existe en la base de datos';
+                $celdasError[] = $indiceTipo;
+            }
+
+            if ($modelo === '' || !isset($modelosExistentes[$modeloNormalizado])) {
+                $observaciones[] = 'El modelo no existe en la base de datos';
+                $celdasError[] = $indiceModelo;
+            }
+
             $filasTabla[] = [
                 'datos' => $fila,
-                'celdas_error' => $celdasError,
+                'celdas_error' => array_values(array_unique($celdasError)),
                 'observaciones' => implode(' | ', $observaciones),
             ];
         }
@@ -336,12 +436,17 @@ if (
         }
 
         if (!$hayErrores) {
-            $mensaje = 'No hay coincidencias.';
+            $mensaje = 'No hay errores.';
         }
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
 }
+
+$cabecerasCsv = array_map(
+    static fn($cabecera): string => convertirAUtf8((string) $cabecera),
+    $cabecerasCsv
+);
 ?>
 <!DOCTYPE html>
 <html lang="es">
